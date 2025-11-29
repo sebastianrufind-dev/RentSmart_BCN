@@ -7,6 +7,19 @@ from sklearn.linear_model import LinearRegression
 
 app = FastAPI(title="Barcelona Rental Recommender API")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Barcelona Rental Recommender API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for now (simple fix)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow POST, GET, OPTIONS, etc.
+    allow_headers=["*"],
+)
+
+
 # ----------------------------
 # 1. Simulated dataset
 # ----------------------------
