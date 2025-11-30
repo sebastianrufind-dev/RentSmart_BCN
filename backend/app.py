@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 
 # ============================================================
-# DATASET
+# STEP 1: SIMULATED DATASET OF BARCELONA APARTMENTS
 # ============================================================
 
 rent_ranges = {
@@ -41,7 +41,27 @@ for n in neigh_list:
 df_apartments = pd.DataFrame(data)
 
 # ============================================================
-# RECOMMENDER LOGIC (same as your notebook, but without widgets)
+# HELPER: NORMALIZE NEIGHBOURHOOD VALUE
+# ============================================================
+
+def normalize_neighbourhood(neighbourhood: Optional[str]) -> Optional[str]:
+    """
+    Accept either:
+      - '08007'
+      - '08007 - Eixample'
+    and always return '08007'.
+    If the value is None or already clean, return as-is.
+    """
+    if neighbourhood is None:
+        return None
+    if isinstance(neighbourhood, str):
+        token = neighbourhood.split()[0]  # take first part before the space
+        if token.isdigit() and len(token) == 5:
+            return token
+    return neighbourhood
+
+# ============================================================
+# STEP 2: RECOMMENDATION PIPELINE (TENANT)
 # ============================================================
 
 def generate_candidates(df, budget, bedrooms, neighbourhood=None, tol=0.10):
@@ -101,7 +121,7 @@ def recommendation_pipeline(df, budget, bedrooms, neigh, top=10, tol=0.10):
     return rerank(scored, top)
 
 # ============================================================
-# REGRESSION MODEL FOR LANDLORDS
+# STEP 3: REGRESSION MODEL (LANDLORD PRICE RECOMMENDATION)
 # ============================================================
 
 X = pd.get_dummies(df_apartments[["number_bedrooms", "neigbourhood"]], drop_first=True)
@@ -111,6 +131,7 @@ reg_model = LinearRegression()
 reg_model.fit(X, y)
 
 def predict_rent_price(bedrooms, neighbourhood_zip):
+    """Predict monthly rent using the regression model."""
     feat = pd.DataFrame({
         "number_bedrooms": [bedrooms],
         "neigbourhood": [neighbourhood_zip]
@@ -121,14 +142,14 @@ def predict_rent_price(bedrooms, neighbourhood_zip):
     return float(pred)
 
 # ============================================================
-# FASTAPI APP + CORS
+# STEP 4: FASTAPI APP + CORS
 # ============================================================
 
 app = FastAPI(title="Barcelona Rental Recommender API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # open for demo; restrict in production
+    allow_origins=["*"],      # open for demo; restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -150,7 +171,7 @@ class TenantRecommendation(BaseModel):
     total_score: float
 
 class TenantResponse(BaseModel):
-    recommendations: list[TenantRecommendation]
+    recommendations: List[TenantRecommendation]
     probability: float
 
 class LandlordRequest(BaseModel):
@@ -167,12 +188,15 @@ class LandlordResponse(BaseModel):
 
 @app.post("/tenant_recommendations", response_model=TenantResponse)
 def tenant_recommendations(req: TenantRequest):
+    # Normalize neighbourhood (handles '08007 - Eixample' or '08007')
+    neigh = normalize_neighbourhood(req.neighbourhood_zip)
+
     rec = recommendation_pipeline(
         df_apartments,
         budget=req.budget,
         bedrooms=req.bedrooms,
-        neigh=req.neighbourhood_zip,
-        top= req.top_n
+        neigh=neigh,
+        top=req.top_n
     )
     if rec.empty:
         return TenantResponse(recommendations=[], probability=0.0)
@@ -181,39 +205,43 @@ def tenant_recommendations(req: TenantRequest):
         df_apartments,
         budget=req.budget,
         bedrooms=req.bedrooms,
-        neighbourhood=req.neighbourhood_zip,
+        neighbourhood=neigh,
     )
     matches = len(candidates)
-    total = len(df_apartments) if req.neighbourhood_zip is None else \
-            len(df_apartments[df_apartments.neigbourhood == req.neighbourhood_zip])
+    total = len(df_apartments) if neigh is None else \
+            len(df_apartments[df_apartments.neigbourhood == neigh])
     probability = matches / total if total > 0 else 0.0
 
-    recs_out = [
-        TenantRecommendation(
-            apartment_name=row.Apartment_name,
-            rental_price=float(row.Rental_price),
-            number_bedrooms=int(row.number_bedrooms),
-            neighbourhood=row.neigbourhood,
-            total_score=float(row.total_score),
+    recs_out: List[TenantRecommendation] = []
+    for _, row in rec.iterrows():
+        recs_out.append(
+            TenantRecommendation(
+                apartment_name=row["Apartment_name"],
+                rental_price=float(row["Rental_price"]),
+                number_bedrooms=int(row["number_bedrooms"]),
+                neighbourhood=row["neigbourhood"],
+                total_score=float(row["total_score"]),
+            )
         )
-        for _, row in rec.iterrows()
-    ]
 
     return TenantResponse(recommendations=recs_out, probability=probability)
 
 @app.post("/landlord_recommendation", response_model=LandlordResponse)
 def landlord_recommendation(req: LandlordRequest):
-    price = predict_rent_price(req.bedrooms, req.neighbourhood_zip)
+    neigh = normalize_neighbourhood(req.neighbourhood_zip)
+
+    price = predict_rent_price(req.bedrooms, neigh)
+
     comps = df_apartments[
-        (df_apartments.number_bedrooms == req.bedrooms) &
-        (df_apartments.neigbourhood == req.neighbourhood_zip)
+        (df_apartments["number_bedrooms"] == req.bedrooms) &
+        (df_apartments["neigbourhood"] == neigh)
     ]
     if comps.empty:
         avg_price = min_price = max_price = price
     else:
-        avg_price = float(comps.Rental_price.mean())
-        min_price = float(comps.Rental_price.min())
-        max_price = float(comps.Rental_price.max())
+        avg_price = float(comps["Rental_price"].mean())
+        min_price = float(comps["Rental_price"].min())
+        max_price = float(comps["Rental_price"].max())
 
     return LandlordResponse(
         recommended_price=price,
